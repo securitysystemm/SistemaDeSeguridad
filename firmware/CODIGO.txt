@@ -1,0 +1,83 @@
+
+#include "pico/stdlib.h"
+#include "hardware/gpio.h"
+#include <stdbool.h>
+
+#define SENSOR_PIN1 16   // Pin del sensor infrarrojo 1
+#define SENSOR_PIN2 17   // Pin del sensor infrarrojo 2
+#define LED_PIN 2       // Pin del LED
+#define BUZZER_PIN 10    // Pin del buzzer
+
+volatile bool timer_active = false;
+volatile bool alarm_active = false;
+repeating_timer_t timer;
+
+// Callback del temporizador para parpadear LED y buzzer
+bool timer_callback(repeating_timer_t *t) {
+    if (alarm_active) {
+        gpio_put(LED_PIN, !gpio_get(LED_PIN));   // Alterna el estado del LED
+        gpio_put(BUZZER_PIN, !gpio_get(BUZZER_PIN)); // Alterna el estado del buzzer
+    }
+    return true;
+}
+
+// Callback de 5 segundos para verificar el estado de los sensores
+int64_t alarm_check_callback(alarm_id_t id, void *user_data) {
+    alarm_active = false;  // Desactiva la alarma después de 5 segundos
+    gpio_put(LED_PIN, 0);   // Apaga el LED
+    gpio_put(BUZZER_PIN, 0); // Apaga el buzzer
+    cancel_repeating_timer(&timer); // Detiene el temporizador de parpadeo
+    timer_active = false;
+
+    // Revisa el estado de todos los sensores
+    if (gpio_get(SENSOR_PIN1) || gpio_get(SENSOR_PIN2)) {
+        gpio_callback(SENSOR_PIN1, GPIO_IRQ_LEVEL_HIGH);  // Reactiva la alarma si cualquier sensor está bloqueado
+    }
+    return 0;
+}
+
+// Interrupción de los sensores cuando están bloqueados (nivel alto)
+void gpio_callback(uint gpio, uint32_t events) {
+    if (!timer_active) {  // Solo activa si no hay temporizador en curso
+        if (gpio_get(SENSOR_PIN1) || gpio_get(SENSOR_PIN2)) {  // Si algún sensor está bloqueado
+            alarm_active = true;  // Activa la alarma
+            timer_active = true;
+
+            // Inicia temporizador para parpadeo de LED y buzzer cada 500 ms
+            add_repeating_timer_ms(500, timer_callback, NULL, &timer);
+
+            // Configura un temporizador de 5 segundos para verificar el estado de los sensores
+            add_alarm_in_ms(5000, alarm_check_callback, NULL, false);
+        }
+    }
+}
+
+int main() {
+    stdio_init_all();
+
+    // Configura los sensores como entradas
+    gpio_init(SENSOR_PIN1);
+    gpio_set_dir(SENSOR_PIN1, GPIO_IN);
+    gpio_init(SENSOR_PIN2);
+    gpio_set_dir(SENSOR_PIN2, GPIO_IN);
+    
+    // Configura el LED y el buzzer como salidas
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+    gpio_put(LED_PIN, 0);  // Apaga el LED inicialmente
+
+    gpio_init(BUZZER_PIN);
+    gpio_set_dir(BUZZER_PIN, GPIO_OUT);
+    gpio_put(BUZZER_PIN, 0);  // Apaga el buzzer inicialmente
+
+    // Configura la interrupción para detectar bloqueo de los sensores
+    gpio_set_irq_enabled_with_callback(SENSOR_PIN1, GPIO_IRQ_LEVEL_HIGH, true, &gpio_callback);
+    gpio_set_irq_enabled_with_callback(SENSOR_PIN2, GPIO_IRQ_LEVEL_HIGH, true, &gpio_callback);
+    
+    while (true) {
+        tight_loop_contents();  // Mantiene el procesador en un loop activo sin acciones extra
+    }
+
+    return 0;
+}
+
